@@ -69,7 +69,7 @@ var globalLayersMutex = &sync.Mutex{}
 /******************************************************************************/
 
 func init() {
-	viper.SetDefault("DbConnection", "sslmode=disable")
+	viper.SetDefault("DbConnection", "postgres://docker:docker@localhost:25432/mobilitydb")
 	viper.SetDefault("HttpHost", "0.0.0.0")
 	viper.SetDefault("HttpPort", 7800)
 	viper.SetDefault("HttpsPort", 7801)
@@ -78,7 +78,7 @@ func init() {
 	viper.SetDefault("UrlBase", "")
 	viper.SetDefault("DefaultResolution", 4096)
 	viper.SetDefault("DefaultBuffer", 256)
-	viper.SetDefault("MaxFeaturesPerTile", 10000)
+	viper.SetDefault("MaxFeaturesPerTile", -1)
 	viper.SetDefault("DefaultMinZoom", 0)
 	viper.SetDefault("DefaultMaxZoom", 22)
 	viper.SetDefault("Debug", false)
@@ -86,10 +86,10 @@ func init() {
 	// 1d, 1h, 1m, 1s, see https://golang.org/pkg/time/#ParseDuration
 	viper.SetDefault("DbPoolMaxConnLifeTime", "1h")
 	viper.SetDefault("DbPoolMaxConns", 4)
-	viper.SetDefault("DbTimeout", 10)
+	viper.SetDefault("DbTimeout", 300)
 	viper.SetDefault("CORSOrigins", []string{"*"})
 	viper.SetDefault("BasePath", "/")
-	viper.SetDefault("CacheTTL", 0)          // cache timeout in seconds
+	viper.SetDefault("CacheTTL", 21600)      // cache timeout in seconds
 	viper.SetDefault("EnableMetrics", false) // Prometheus metrics
 
 	viper.SetDefault("CoordinateSystem.SRID", 3857)

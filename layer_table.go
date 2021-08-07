@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -66,7 +67,7 @@ func (lyr LayerTable) GetID() string {
 }
 
 func (lyr LayerTable) GetDescription() string {
-	return lyr.Description
+	return lyr.Description + fmt.Sprintf(" - %s(%d)", lyr.GeometryColumn, lyr.Srid)
 }
 
 func (lyr LayerTable) GetName() string {
@@ -252,16 +253,16 @@ func (lyr *LayerTable) GetBoundsExact() (Bounds, error) {
 	WITH ext AS (
 		SELECT
 			coalesce(
-				ST_Transform(ST_SetSRID(ST_Extent("%s"), %d), 4326),
+				transform(setSRID(extent("%s"), %d), 4326),
 				ST_MakeEnvelope(-180, -90, 180, 90, 4326)
 			) AS geom
 		FROM "%s"."%s"
 	)
 	SELECT
-		ST_XMin(ext.geom) AS xmin,
-		ST_YMin(ext.geom) AS ymin,
-		ST_XMax(ext.geom) AS xmax,
-		ST_YMax(ext.geom) AS ymax
+		Xmin(ext.geom) AS xmin,
+		Ymin(ext.geom) AS ymin,
+		Xmax(ext.geom) AS xmax,
+		Ymax(ext.geom) AS ymax
 	FROM ext
 	`, lyr.GeometryColumn, lyr.Srid, lyr.Schema, lyr.Table)
 
@@ -385,7 +386,7 @@ func (lyr *LayerTable) requestSQL(tile *Tile, qp *queryParameters) (string, erro
 	mvtParams := make([]string, 0)
 	mvtParams = append(mvtParams, fmt.Sprintf("'%s', %d", lyr.ID, qp.Resolution))
 	if lyr.GeometryColumn != "" {
-		mvtParams = append(mvtParams, fmt.Sprintf("'%s'", lyr.GeometryColumn))
+		mvtParams = append(mvtParams, "'geom'")
 	}
 	// The idColumn parameter is PostGIS3+ only
 	if globalPostGISVersion >= 3000000 && lyr.IDColumn != "" {
@@ -410,27 +411,25 @@ func (lyr *LayerTable) requestSQL(tile *Tile, qp *queryParameters) (string, erro
 		sp.Limit = fmt.Sprintf("LIMIT %d", qp.Limit)
 	}
 
-	// TODO: Remove ST_Force2D when fixes to line clipping are common
-	// in GEOS. See https://trac.osgeo.org/postgis/ticket/4690
 	tmplSQL := `
-	SELECT ST_AsMVT(mvtgeom, {{ .MvtParams }}) FROM (
-		SELECT ST_AsMVTGeom(
-			ST_Transform(ST_Force2D(t."{{ .GeometryColumn }}"), {{ .TileSrid }}),
+	WITH
+	bounds AS (
+		SELECT {{ .TileSQL }}  AS geom_clip, {{ .QuerySQL }} AS geom_query
+	), mvtgeom AS (
+		SELECT (AsMVTgeom(
+			transform(t."{{ .GeometryColumn }}", {{ .TileSrid }}),
 			bounds.geom_clip,
 			{{ .Resolution }},
 			{{ .Buffer }}
-		  ) AS "{{ .GeometryColumn }}"
-		  {{ if .Properties }}
-		  , {{ .Properties }}
-		  {{ end }}
-		FROM "{{ .Schema }}"."{{ .Table }}" t, (
-			SELECT {{ .TileSQL }}  AS geom_clip,
-					{{ .QuerySQL }} AS geom_query
-			) bounds
-		WHERE ST_Intersects(t."{{ .GeometryColumn }}",
-							ST_Transform(bounds.geom_query, {{ .Srid }}))
+		)).*
+		{{ if .Properties }}
+			, {{ .Properties }}
+		{{ end }}
+		FROM "{{ .Schema }}"."{{ .Table }}" t, bounds
+		WHERE t."{{ .GeometryColumn }}" && transform(bounds.geom_query, {{ .Srid }})
 		{{ .Limit }}
-	) mvtgeom
+	)
+	SELECT ST_AsMVT(mvtgeom.*) FROM mvtgeom
 	`
 
 	sql, err := renderSQLTemplate("tabletilesql", tmplSQL, sp)
@@ -471,10 +470,9 @@ func getTableLayers() ([]LayerTable, error) {
 	LEFT JOIN pg_attribute ia ON (ia.attrelid = i.indexrelid)
 	LEFT JOIN pg_type it ON (ia.atttypid = it.oid AND it.typname in ('int2', 'int4', 'int8'))
 	WHERE c.relkind IN ('r', 'v', 'm', 'p')
-		AND t.typname = 'geometry'
+		AND t.typname = 'tgeompoint'
 		AND has_table_privilege(c.oid, 'select')
 		AND has_schema_privilege(n.oid, 'usage')
-		AND postgis_typmod_srid(a.atttypmod) > 0
 	ORDER BY 1
 	`
 
@@ -541,6 +539,17 @@ func getTableLayers() ([]LayerTable, error) {
 			GeometryType:   geometryType,
 			IDColumn:       idColumn,
 			Properties:     properties,
+		}
+
+		var newSrid int
+		sridQuery := fmt.Sprintf("SELECT SRID(%s) FROM %s.%s LIMIT 1", geometryColumn, schema, table)
+		err = db.QueryRow(context.Background(), sridQuery).Scan(&newSrid)
+		if err != nil {
+			if !strings.Contains(sql.ErrNoRows.Error(), err.Error()) {
+				return nil, err
+			}
+		} else {
+			lyr.Srid = newSrid
 		}
 
 		layerTables = append(layerTables, lyr)
